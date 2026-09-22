@@ -1,7 +1,5 @@
 #!/bin/bash
 
-# omarchy:group=migrate
-# omarchy:name=migrate
 # omarchy:summary=Run pending Omarchy migrations.
 # omarchy:args=[--pending]
 

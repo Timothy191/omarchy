@@ -22,16 +22,12 @@ checks=()
 statuses=()
 details=()
 
-add_check() {
-  checks+=("$1")
-  statuses+=("$2")
-  details+=("$3")
-}
+add_check() { checks+=("$1"); statuses+=("$2"); details+=("$3"); }
 
 check_command() {
   local cmd="$1" required="$2"
   if command -v "$cmd" >/dev/null 2>&1; then
-    add_check "command:$cmd" ok "available"
+    add_check "command:$cmd" ok available
   elif [[ $required == required ]]; then
     add_check "command:$cmd" fail "missing required command"
   else
@@ -39,9 +35,12 @@ check_command() {
   fi
 }
 
-json_string() {
-  jq -Rn --arg value "$1" '$value'
-}
+json_string() { jq -Rn --arg value "$1" '$value'; }
+
+if (( json )) && ! command -v jq >/dev/null 2>&1; then
+  echo "JSON output requires jq" >&2
+  exit 127
+fi
 
 if [[ -r $OS_RELEASE_PATH ]]; then
   . "$OS_RELEASE_PATH"

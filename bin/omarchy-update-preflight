@@ -17,15 +17,13 @@ checks=()
 statuses=()
 details=()
 
-add_check() {
-  checks+=("$1")
-  statuses+=("$2")
-  details+=("$3")
-}
+add_check() { checks+=("$1"); statuses+=("$2"); details+=("$3"); }
+json_string() { jq -Rn --arg value "$1" '$value'; }
 
-json_string() {
-  jq -Rn --arg value "$1" '$value'
-}
+if (( json )) && ! command -v jq >/dev/null 2>&1; then
+  echo "JSON output requires jq" >&2
+  exit 127
+fi
 
 if command -v omarchy-update-requires-free-space >/dev/null 2>&1; then
   if omarchy-update-requires-free-space >/dev/null 2>&1; then

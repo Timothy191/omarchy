@@ -2,7 +2,6 @@
 # omarchy:group=state
 # omarchy:name=state-export
 # omarchy:summary=Export Omarchy persistent state as JSON without changing it.
-# omarchy:args=
 
 set -u -o pipefail
 

@@ -1,0 +1,50 @@
+#!/bin/bash
+# omarchy:group=migrate
+# omarchy:name=migrate-safe
+# omarchy:summary=Run pending Omarchy migrations with atomic completion markers.
+# omarchy:args=[--pending]
+
+set -euo pipefail
+
+OMARCHY_PATH="${OMARCHY_PATH:-/usr/share/omarchy}"
+STATE_DIR="${OMARCHY_MIGRATION_STATE:-$HOME/.local/state/omarchy/migrations}"
+MIGRATIONS_DIR="$OMARCHY_PATH/migrations"
+
+pending=0
+[[ ${1:-} == "--pending" ]] && pending=1
+
+migration_entries() {
+  [[ -d "$MIGRATIONS_DIR" ]] || return 0
+  local file name
+  for file in "$MIGRATIONS_DIR"/*.sh; do
+    [[ -f "$file" ]] || continue
+    name=$(basename "$file")
+    printf '%s\t%s\t%s\n' "$name" "$file" "$STATE_DIR/$name"
+  done
+}
+
+if (( pending )); then
+  migration_entries | while IFS=$'\t' read -r name file marker; do
+    [[ -f "$marker" ]] || printf '%s\n' "$name"
+  done
+  exit 0
+fi
+
+mkdir -p "$STATE_DIR"
+[[ -d "$MIGRATIONS_DIR" ]] || exit 0
+
+while IFS=$'\t' read -r name file marker; do
+  [[ -n "$name" ]] || continue
+  [[ -f "$marker" ]] && continue
+
+  echo -e "\e[32mRunning migration (${name%.sh})\e[0m"
+  if ! OMARCHY_PATH="$OMARCHY_PATH" bash -euo pipefail "$file"; then
+    echo "Migration failed: $name" >&2
+    echo "The completion marker was not written; retry after correcting the failure." >&2
+    exit 1
+  fi
+
+  marker_tmp="$marker.tmp.$$"
+  : > "$marker_tmp"
+  mv -f "$marker_tmp" "$marker"
+done < <(migration_entries)

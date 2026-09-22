@@ -1,0 +1,116 @@
+#!/bin/bash
+# omarchy:group=debug
+# omarchy:name=doctor
+# omarchy:summary=Check Omarchy installation health without modifying the system.
+# omarchy:args=[--json]
+# omarchy:examples=omarchy doctor;omarchy doctor --json
+
+set -u -o pipefail
+
+OMARCHY_PATH="${OMARCHY_PATH:-/usr/share/omarchy}"
+json=0
+[[ ${1:-} == "--json" ]] && json=1
+
+checks=()
+statuses=()
+details=()
+
+add_check() {
+  local name="$1" status="$2" detail="$3"
+  checks+=("$name"); statuses+=("$status"); details+=("$detail")
+}
+
+check_command() {
+  local cmd="$1" required="$2"
+  if command -v "$cmd" >/dev/null 2>&1; then
+    add_check "command:$cmd" "ok" "available"
+  elif [[ "$required" == "required" ]]; then
+    add_check "command:$cmd" "fail" "missing required command"
+  else
+    add_check "command:$cmd" "warn" "optional command not found"
+  fi
+}
+
+if [[ -r /etc/os-release ]]; then
+  . /etc/os-release
+  if [[ "${ID:-}" == "arch" || "${ID_LIKE:-}" == *arch* ]]; then
+    add_check "os" "ok" "${PRETTY_NAME:-Arch-based system}"
+  else
+    add_check "os" "fail" "Omarchy requires an Arch-based system; detected ${PRETTY_NAME:-unknown}"
+  fi
+else
+  add_check "os" "fail" "/etc/os-release is unavailable"
+fi
+
+if [[ -d "$OMARCHY_PATH" ]]; then
+  add_check "omarchy-path" "ok" "$OMARCHY_PATH"
+else
+  add_check "omarchy-path" "fail" "$OMARCHY_PATH does not exist"
+fi
+
+for cmd in pacman systemctl git; do check_command "$cmd" required; done
+for cmd in hyprctl waybar; do check_command "$cmd" optional; done
+
+[[ -d "$OMARCHY_PATH/migrations" ]] &&
+  add_check "migrations" "ok" "migration directory present" ||
+  add_check "migrations" "fail" "migration directory missing"
+
+[[ -d "$OMARCHY_PATH/bin" ]] &&
+  add_check "commands" "ok" "command directory present" ||
+  add_check "commands" "fail" "command directory missing"
+
+if command -v systemctl >/dev/null 2>&1; then
+  if systemctl is-system-running >/dev/null 2>&1; then
+    add_check "systemd" "ok" "system manager is operational"
+  else
+    state=$(systemctl is-system-running 2>/dev/null || true)
+    [[ -n "$state" ]] || state="unavailable"
+    add_check "systemd" "warn" "system manager state: $state"
+  fi
+fi
+
+if command -v git >/dev/null 2>&1 && [[ -d "$OMARCHY_PATH/.git" ]]; then
+  if git -C "$OMARCHY_PATH" diff --quiet && git -C "$OMARCHY_PATH" diff --cached --quiet; then
+    add_check "git-tree" "ok" "Omarchy tree has no local modifications"
+  else
+    add_check "git-tree" "warn" "Omarchy tree contains local modifications"
+  fi
+fi
+
+if command -v pacman >/dev/null 2>&1; then
+  if pacman -Q omarchy >/dev/null 2>&1; then
+    add_check "package" "ok" "omarchy package is installed"
+  else
+    add_check "package" "warn" "omarchy package is not installed or not queryable"
+  fi
+fi
+
+if command -v lspci >/dev/null 2>&1; then
+  gpu=$(lspci 2>/dev/null | grep -Ei 'VGA compatible controller|3D controller|Display controller' | head -n 1 || true)
+  [[ -n "$gpu" ]] && add_check "gpu" "ok" "$gpu" || add_check "gpu" "warn" "no PCI GPU detected"
+fi
+
+if compgen -G "/sys/class/power_supply/BAT*" >/dev/null; then
+  add_check "battery" "ok" "battery device detected"
+else
+  add_check "battery" "warn" "no battery device detected"
+fi
+
+if (( json )); then
+  printf '{"omarchy_path":"%s","checks":[' "$(printf '%s' "$OMARCHY_PATH" | sed 's/\\/\\\\/g;s/"/\\"/g')"
+  for i in "${!checks[@]}"; do
+    (( i )) && printf ','
+    printf '{"name":"%s","status":"%s","detail":"%s"}'       "$(printf '%s' "${checks[i]}" | sed 's/\\/\\\\/g;s/"/\\"/g')"       "${statuses[i]}"       "$(printf '%s' "${details[i]}" | sed 's/\\/\\\\/g;s/"/\\"/g')"
+  done
+  printf ']}\n'
+else
+  printf '%-24s %-5s %s\n' "CHECK" "STATE" "DETAIL"
+  for i in "${!checks[@]}"; do
+    printf '%-24s %-5s %s\n' "${checks[i]}" "${statuses[i]}" "${details[i]}"
+  done
+fi
+
+for status in "${statuses[@]}"; do
+  [[ "$status" == "fail" ]] && exit 1
+done
+exit 0

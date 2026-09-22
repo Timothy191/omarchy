@@ -1,0 +1,137 @@
+#!/bin/bash
+# omarchy:group=debug
+# omarchy:name=doctor
+# omarchy:summary=Check Omarchy installation health without modifying the system.
+# omarchy:args=[--json]
+# omarchy:examples=omarchy doctor | omarchy doctor --json
+
+set -u -o pipefail
+
+OMARCHY_PATH="${OMARCHY_PATH:-/usr/share/omarchy}"
+json=0
+[[ ${1:-} == "--json" ]] && json=1
+
+checks=()
+statuses=()
+details=()
+
+add_check() {
+  checks+=("$1")
+  statuses+=("$2")
+  details+=("$3")
+}
+
+check_command() {
+  local cmd="$1" required="$2"
+  if command -v "$cmd" >/dev/null 2>&1; then
+    add_check "command:$cmd" ok "available"
+  elif [[ "$required" == "required" ]]; then
+    add_check "command:$cmd" fail "missing required command"
+  else
+    add_check "command:$cmd" warn "optional command not found"
+  fi
+}
+
+if [[ -r /etc/os-release ]]; then
+  # shellcheck disable=SC1091
+  . /etc/os-release
+  if [[ "${ID:-}" == "arch" || "${ID_LIKE:-}" == *arch* ]]; then
+    add_check "os" ok "${PRETTY_NAME:-Arch-based system}"
+  else
+    add_check "os" fail "Omarchy requires an Arch-based system; detected ${PRETTY_NAME:-unknown}"
+  fi
+else
+  add_check "os" fail "/etc/os-release is unavailable"
+fi
+
+if [[ -d "$OMARCHY_PATH" ]]; then
+  add_check "omarchy-path" ok "$OMARCHY_PATH"
+else
+  add_check "omarchy-path" fail "$OMARCHY_PATH does not exist"
+fi
+
+for cmd in pacman systemctl git; do
+  check_command "$cmd" required
+done
+for cmd in hyprctl waybar; do
+  check_command "$cmd" optional
+done
+
+if [[ -d "$OMARCHY_PATH/migrations" ]]; then
+  add_check "migrations" ok "migration directory present"
+else
+  add_check "migrations" fail "migration directory missing"
+fi
+
+if [[ -d "$OMARCHY_PATH/bin" ]]; then
+  add_check "commands" ok "command directory present"
+else
+  add_check "commands" fail "command directory missing"
+fi
+
+if command -v systemctl >/dev/null 2>&1; then
+  if systemctl is-system-running >/dev/null 2>&1; then
+    add_check "systemd" ok "system manager is operational"
+  else
+    state=$(systemctl is-system-running 2>/dev/null || true)
+    [[ -n "$state" ]] || state="unavailable"
+    add_check "systemd" warn "system manager state: $state"
+  fi
+fi
+
+if command -v git >/dev/null 2>&1 && [[ -d "$OMARCHY_PATH/.git" ]]; then
+  if git -C "$OMARCHY_PATH" diff --quiet && git -C "$OMARCHY_PATH" diff --cached --quiet; then
+    add_check "git-tree" ok "Omarchy tree has no local modifications"
+  else
+    add_check "git-tree" warn "Omarchy tree contains local modifications"
+  fi
+fi
+
+if command -v pacman >/dev/null 2>&1; then
+  if pacman -Q omarchy >/dev/null 2>&1; then
+    add_check "package" ok "omarchy package is installed"
+  else
+    add_check "package" warn "omarchy package is not installed or not queryable"
+  fi
+fi
+
+# GPU detection reads cached sysfs vendor IDs, never lspci, so a runtime-
+# suspended GPU is not woken just by running the health check.
+if command -v lspci >/dev/null 2>&1; then
+  gpu=$(lspci 2>/dev/null | grep -Ei 'VGA compatible controller|3D controller|Display controller' | head -n 1 || true)
+  if [[ -n "$gpu" ]]; then
+    add_check "gpu" ok "$gpu"
+  else
+    add_check "gpu" warn "no PCI GPU detected"
+  fi
+else
+  add_check "gpu" warn "lspci is unavailable; GPU detection skipped"
+fi
+
+if compgen -G "/sys/class/power_supply/BAT*" >/dev/null 2>&1; then
+  add_check "battery" ok "battery device detected"
+else
+  add_check "battery" warn "no battery device detected"
+fi
+
+if (( json )); then
+  printf '{"omarchy_path":"%s","checks":[' "$(printf '%s' "$OMARCHY_PATH" | sed 's/\\/\\\\/g;s/"/\\"/g')"
+  for i in "${!checks[@]}"; do
+    (( i )) && printf ','
+    printf '{"name":"%s","status":"%s","detail":"%s"}' \
+      "$(printf '%s' "${checks[i]}" | sed 's/\\/\\\\/g;s/"/\\"/g')" \
+      "${statuses[i]}" \
+      "$(printf '%s' "${details[i]}" | sed 's/\\/\\\\/g;s/"/\\"/g')"
+  done
+  printf ']}\n'
+else
+  printf '%-24s %-5s %s\n' "CHECK" "STATE" "DETAIL"
+  for i in "${!checks[@]}"; do
+    printf '%-24s %-5s %s\n' "${checks[i]}" "${statuses[i]}" "${details[i]}"
+  done
+fi
+
+for status in "${statuses[@]}"; do
+  [[ "$status" == "fail" ]] && exit 1
+done
+exit 0

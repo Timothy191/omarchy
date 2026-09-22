@@ -1,0 +1,25 @@
+#!/bin/bash
+# omarchy:group=state
+# omarchy:name=export
+# omarchy:summary=Export Omarchy persistent state as JSON without changing it.
+# omarchy:examples=omarchy state export
+
+set -u
+
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy"
+
+escape_json() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g;s/"/\\"/g'
+}
+
+printf '{"state_dir":"%s","entries":[' "$(escape_json "$STATE_DIR")"
+first=1
+if [[ -d "$STATE_DIR" ]]; then
+  while IFS= read -r -d '' file; do
+    name=$(basename "$file")
+    [[ $first -eq 1 ]] || printf ','
+    first=0
+    printf '"%s"' "$(escape_json "$name")"
+  done < <(find "$STATE_DIR" -maxdepth 1 -type f -print0 | sort -z)
+fi
+printf ']}\n'

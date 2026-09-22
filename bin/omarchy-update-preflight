@@ -1,0 +1,103 @@
+#!/bin/bash
+# omarchy:group=update
+# omarchy:name=preflight
+# omarchy:summary=Validate update prerequisites without modifying the system.
+# omarchy:args=[--json]
+# omarchy:examples=omarchy update preflight | omarchy update preflight --json
+
+set -u -o pipefail
+
+json=0
+[[ ${1:-} == "--json" ]] && json=1
+
+checks=()
+statuses=()
+details=()
+
+add_check() {
+  checks+=("$1")
+  statuses+=("$2")
+  details+=("$3")
+}
+
+# Reuse the update pipeline's own disk-space rule rather than a second,
+# independently-maintained copy of the threshold. omarchy-update-requires-free-space
+# exits 0 when there is enough space and 1 otherwise; it honours
+# OMARCHY_UPDATE_FORCE and is the single source of truth for the 10 GiB floor.
+if command -v omarchy-update-requires-free-space >/dev/null 2>&1; then
+  if omarchy-update-requires-free-space; then
+    add_check "disk-space" ok "at least 10 GiB available"
+  else
+    add_check "disk-space" fail "less than 10 GiB available"
+  fi
+else
+  add_check "disk-space" warn "disk-space helper unavailable"
+fi
+
+pacman_lock_path="${OMARCHY_PACMAN_LOCK_PATH:-/var/lib/pacman/db.lck}"
+
+if command -v pacman >/dev/null 2>&1; then
+  if [[ -e $pacman_lock_path ]]; then
+    add_check "pacman-lock" fail "pacman transaction lock is present"
+  else
+    add_check "pacman-lock" ok "no pacman transaction is active"
+  fi
+else
+  add_check "pacman" fail "pacman is unavailable"
+fi
+
+# The update lock is owned by omarchy-update-lock. Asking it directly keeps the
+# preflight consistent with what omarchy update will actually contend for.
+if command -v omarchy-update-lock >/dev/null 2>&1; then
+  if omarchy-update-lock held; then
+    add_check "update-lock" fail "another Omarchy update is already running"
+  else
+    add_check "update-lock" ok "no Omarchy update is running"
+  fi
+else
+  add_check "update-lock" warn "update-lock helper unavailable"
+fi
+
+if command -v systemctl >/dev/null 2>&1; then
+  if systemctl is-system-running >/dev/null 2>&1; then
+    add_check "systemd" ok "system manager is operational"
+  else
+    state=$(systemctl is-system-running 2>/dev/null || true)
+    [[ -n "$state" ]] || state="unavailable"
+    add_check "systemd" warn "system manager state: $state"
+  fi
+else
+  add_check "systemd" warn "systemctl is unavailable"
+fi
+
+# A pending migration is a warning, not a failure: omarchy update owns the
+# migration sequence and runs them itself after the package upgrade.
+if command -v omarchy-migrate >/dev/null 2>&1; then
+  if omarchy-migrate --pending >/dev/null 2>&1; then
+    add_check "migrations" warn "pending migrations exist"
+  else
+    add_check "migrations" ok "no pending migrations reported"
+  fi
+else
+  add_check "migrations" warn "migration command unavailable"
+fi
+
+if (( json )); then
+  printf '{"checks":['
+  for i in "${!checks[@]}"; do
+    (( i )) && printf ','
+    printf '{"name":"%s","status":"%s","detail":"%s"}' \
+      "${checks[i]}" "${statuses[i]}" "${details[i]}"
+  done
+  printf ']}\n'
+else
+  printf '%-16s %-5s %s\n' CHECK STATE DETAIL
+  for i in "${!checks[@]}"; do
+    printf '%-16s %-5s %s\n' "${checks[i]}" "${statuses[i]}" "${details[i]}"
+  done
+fi
+
+for status in "${statuses[@]}"; do
+  [[ "$status" == "fail" ]] && exit 1
+done
+exit 0

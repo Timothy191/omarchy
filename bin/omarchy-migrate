@@ -85,6 +85,11 @@ wait_for_pacman_transaction
 mkdir -p "$STATE_DIR"
 [[ -d $MIGRATIONS_DIR ]] || exit 0
 
+# The completion marker is written atomically (temp file + rename) and only
+# after the migration itself succeeds. A migration that fails, or a process
+# killed mid-migration, therefore leaves no marker behind, so the next run
+# retries it. The rename also makes the marker appear all at once instead of
+# being read while a partial write is in flight.
 while IFS=$'\t' read -r name file marker <&3; do
   [[ -n $name ]] || continue
 
@@ -92,7 +97,9 @@ while IFS=$'\t' read -r name file marker <&3; do
     echo -e "\e[32m\nRunning migration (${name%.sh})\e[0m"
     OMARCHY_PATH="$OMARCHY_PATH" bash -euo pipefail "$file" 3<&-
     mkdir -p "$(dirname "$marker")"
-    touch "$marker"
+    marker_tmp="$marker.tmp.$$"
+    : > "$marker_tmp"
+    mv -f "$marker_tmp" "$marker"
   fi
 done 3< <(migration_entries)
 

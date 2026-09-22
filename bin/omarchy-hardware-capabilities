@@ -1,0 +1,51 @@
+#!/bin/bash
+# omarchy:group=hw
+# omarchy:name=capabilities
+# omarchy:summary=Report detected hardware capabilities for scripts and support tools.
+# omarchy:args=[--json]
+# omarchy:examples=omarchy hardware capabilities | omarchy hardware capabilities --json
+
+set -u
+
+json=0
+[[ ${1:-} == "--json" ]] && json=1
+
+# Capability detection, not hardware branding. Each field is a boolean or a
+# vendor string so callers can branch on capabilities instead of model names.
+# GPU vendor is read from cached sysfs IDs, never lspci, so a runtime-suspended
+# GPU is not woken by running this command.
+pci_devices_path="${OMARCHY_PCI_DEVICES_PATH:-/sys/bus/pci/devices}"
+gpu_vendor="unknown"
+if [[ -d "$pci_devices_path" ]]; then
+  vendor_id=""
+  for device in "$pci_devices_path"/*; do
+    [[ -r "$device/vendor" ]] || continue
+    vendor_id=$(< "$device/vendor")
+    case "$vendor_id" in
+      0x10de) gpu_vendor=nvidia; break ;;
+      0x1002|0x1003) gpu_vendor=amd; break ;;
+      0x8086) gpu_vendor=intel; break ;;
+    esac
+  done
+fi
+[[ "$gpu_vendor" == "unknown" ]] && gpu_vendor="none"
+
+has_nvidia=0
+command -v nvidia-smi >/dev/null 2>&1 && has_nvidia=1
+has_hyprland=0
+command -v hyprctl >/dev/null 2>&1 && has_hyprland=1
+has_waybar=0
+command -v waybar >/dev/null 2>&1 && has_waybar=1
+has_battery=0
+compgen -G "/sys/class/power_supply/BAT*" >/dev/null 2>&1 && has_battery=1
+
+if (( json )); then
+  printf '{"gpu_vendor":"%s","nvidia_smi":%s,"hyprland":%s,"waybar":%s,"battery":%s}\n' \
+    "$gpu_vendor" "$has_nvidia" "$has_hyprland" "$has_waybar" "$has_battery"
+else
+  printf 'gpu_vendor=%s\n' "$gpu_vendor"
+  printf 'nvidia_smi=%s\n' "$has_nvidia"
+  printf 'hyprland=%s\n' "$has_hyprland"
+  printf 'waybar=%s\n' "$has_waybar"
+  printf 'battery=%s\n' "$has_battery"
+fi

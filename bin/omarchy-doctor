@@ -1,0 +1,156 @@
+#!/bin/bash
+# omarchy:group=debug
+# omarchy:name=doctor
+# omarchy:summary=Check Omarchy installation health without modifying the system.
+# omarchy:args=[--json]
+# omarchy:examples=omarchy doctor;omarchy doctor --json
+
+set -o pipefail
+
+json=false
+[[ ${1:-} == "--json" ]] && json=true
+
+ok=0
+warn=0
+fail=0
+results=()
+
+add_result() {
+  local status="$1"
+  local name="$2"
+  local detail="$3"
+  case "$status" in
+    ok) ok=$((ok + 1));;
+    warn) warn=$((warn + 1));;
+    fail) fail=$((fail + 1));;
+  esac
+  results+=("$status"$'\t'"$name"$'\t'"$detail")
+}
+
+command_exists() { command -v "$1" >/dev/null 2>&1; }
+
+check_command() {
+  local cmd="$1"
+  local required="$2"
+  if command_exists "$cmd"; then
+    add_result ok "command:$cmd" "$(command -v "$cmd")"
+  elif [[ "$required" == "required" ]]; then
+    add_result fail "command:$cmd" "required command is missing"
+  else
+    add_result warn "command:$cmd" "optional command is not installed"
+  fi
+}
+
+if [[ -r /etc/os-release ]]; then
+  . /etc/os-release
+  if [[ ${ID:-} == "arch" || ${ID_LIKE:-} == *arch* ]]; then
+    add_result ok "os" "${PRETTY_NAME:-Arch Linux}"
+  else
+    add_result warn "os" "${PRETTY_NAME:-unknown} (Omarchy expects an Arch-based system)"
+  fi
+else
+  add_result fail "os" "/etc/os-release is unavailable"
+fi
+
+if [[ -n ${OMARCHY_PATH:-} && -d "$OMARCHY_PATH" ]]; then
+  add_result ok "omarchy-path" "$OMARCHY_PATH"
+else
+  add_result fail "omarchy-path" "OMARCHY_PATH is unset or does not point to a directory"
+fi
+
+check_command pacman required
+check_command systemctl required
+check_command git required
+check_command hyprctl optional
+check_command waybar optional
+
+if [[ -d "${OMARCHY_PATH:-}/migrations" ]]; then
+  add_result ok "migrations" "migration directory present"
+else
+  add_result fail "migrations" "migration directory missing"
+fi
+
+if [[ -d "${OMARCHY_PATH:-}/bin" ]]; then
+  add_result ok "command-registry" "command directory present"
+else
+  add_result fail "command-registry" "command directory missing"
+fi
+
+if command_exists systemctl; then
+  if systemctl is-system-running >/dev/null 2>&1; then
+    add_result ok "systemd" "system is running normally"
+  else
+    state=$(systemctl is-system-running 2>/dev/null || true)
+    case "$state" in
+      degraded) add_result warn "systemd" "system is degraded";;
+      *) add_result warn "systemd" "system state: ${state:-unknown}";;
+    esac
+  fi
+fi
+
+if command_exists git && [[ -d "${OMARCHY_PATH:-}/.git" ]]; then
+  branch=$(git -C "$OMARCHY_PATH" branch --show-current 2>/dev/null || true)
+  dirty=$(git -C "$OMARCHY_PATH" status --porcelain 2>/dev/null || true)
+  if [[ -n "$dirty" ]]; then
+    add_result warn "git-state" "${branch:-detached}: local modifications detected"
+  else
+    add_result ok "git-state" "${branch:-detached}: clean working tree"
+  fi
+fi
+
+if command_exists pacman; then
+  if pacman -Qq omarchy >/dev/null 2>&1; then
+    version=$(pacman -Q omarchy 2>/dev/null || true)
+    add_result ok "package" "$version"
+  else
+    add_result warn "package" "omarchy is not installed as a pacman package (source checkout may be intentional)"
+  fi
+fi
+
+if command_exists nvidia-smi; then
+  add_result ok "gpu:nvidia" "nvidia-smi available"
+elif [[ -d /sys/module/amdgpu ]]; then
+  add_result ok "gpu:amd" "amdgpu kernel module loaded"
+elif [[ -d /sys/module/i915 ]]; then
+  add_result ok "gpu:intel" "i915 kernel module loaded"
+else
+  add_result warn "gpu" "no supported GPU kernel module detected"
+fi
+
+if [[ -d /sys/class/power_supply ]]; then
+  if compgen -G "/sys/class/power_supply/BAT*" >/dev/null; then
+    add_result ok "power" "laptop battery detected"
+  else
+    add_result ok "power" "no battery detected (desktop or external power)"
+  fi
+fi
+
+if [[ "$json" == true ]]; then
+  printf '{'
+  printf '"ok":%d,"warn":%d,"fail":%d,"checks":[' "$ok" "$warn" "$fail"
+  first=true
+  for item in "${results[@]}"; do
+    IFS=$'\t' read -r status name detail <<< "$item"
+    $first || printf ','
+    first=false
+    esc_detail=${detail//\\/\\\\}; esc_detail=${esc_detail//\"/\\\"}
+    esc_name=${name//\\/\\\\}; esc_name=${esc_name//\"/\\\"}
+    printf '{"status":"%s","name":"%s","detail":"%s"}' "$status" "$esc_name" "$esc_detail"
+  done
+  printf ']}\n'
+else
+  printf '\nOmarchy system health\n'
+  printf '%s\n' '===================='
+  for item in "${results[@]}"; do
+    IFS=$'\t' read -r status name detail <<< "$item"
+    case "$status" in
+      ok) marker="[OK]";;
+      warn) marker="[WARN]";;
+      fail) marker="[FAIL]";;
+    esac
+    printf '%-6s %-24s %s\n' "$marker" "$name" "$detail"
+  done
+  printf '\nSummary: %d OK, %d warning(s), %d failure(s)\n' "$ok" "$warn" "$fail"
+fi
+
+(( fail == 0 ))

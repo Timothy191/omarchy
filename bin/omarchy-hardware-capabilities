@@ -1,0 +1,62 @@
+#!/bin/bash
+# omarchy:group=hw
+# omarchy:name=capabilities
+# omarchy:summary=Report detected hardware and desktop capabilities for scripts and support tools.
+# omarchy:args=[--json]
+
+set -u -o pipefail
+
+json=0
+case "${1:-}" in
+  --json) json=1 ;;
+  "") ;;
+  *) echo "Usage: omarchy hardware capabilities [--json]" >&2; exit 2 ;;
+esac
+
+has_gpu=0
+nvidia=0
+amd=0
+intel=0
+
+if command -v lspci >/dev/null 2>&1; then
+  gpu_lines=$(lspci 2>/dev/null | grep -Ei 'VGA compatible controller|3D controller|Display controller' || true)
+  [[ -n $gpu_lines ]] && has_gpu=1
+  grep -Eiq 'NVIDIA' <<<"$gpu_lines" && nvidia=1 || true
+  grep -Eiq 'AMD|ATI' <<<"$gpu_lines" && amd=1 || true
+  grep -Eiq 'Intel' <<<"$gpu_lines" && intel=1 || true
+fi
+
+nvidia_smi=0
+command -v nvidia-smi >/dev/null 2>&1 && nvidia_smi=1
+hyprland=0
+command -v hyprctl >/dev/null 2>&1 && hyprland=1
+waybar=0
+command -v waybar >/dev/null 2>&1 && waybar=1
+battery=0
+compgen -G "${OMARCHY_POWER_SUPPLY_PATH:-/sys/class/power_supply}/BAT*" >/dev/null 2>&1 && battery=1
+
+if (( json )); then
+  command -v jq >/dev/null 2>&1 || {
+    echo "JSON output requires jq" >&2
+    exit 127
+  }
+  jq -n     --argjson gpu "$has_gpu"     --argjson gpu_nvidia "$nvidia"     --argjson gpu_amd "$amd"     --argjson gpu_intel "$intel"     --argjson nvidia_smi "$nvidia_smi"     --argjson hyprland "$hyprland"     --argjson waybar "$waybar"     --argjson battery "$battery"     '{
+      gpu: ($gpu == 1),
+      gpu_nvidia: ($gpu_nvidia == 1),
+      gpu_amd: ($gpu_amd == 1),
+      gpu_intel: ($gpu_intel == 1),
+      nvidia_smi: ($nvidia_smi == 1),
+      hyprland: ($hyprland == 1),
+      waybar: ($waybar == 1),
+      battery: ($battery == 1)
+    }'
+else
+  printf 'gpu=%s\n' "$has_gpu"
+  printf 'gpu_nvidia=%s\n' "$nvidia"
+  printf 'gpu_amd=%s\n' "$amd"
+  printf 'gpu_intel=%s\n' "$intel"
+  printf 'nvidia_smi=%s\n' "$nvidia_smi"
+  printf 'hyprland=%s\n' "$hyprland"
+  printf 'waybar=%s\n' "$waybar"
+  printf 'battery=%s\n' "$battery"
+fi

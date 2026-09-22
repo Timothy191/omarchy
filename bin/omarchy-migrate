@@ -1,15 +1,13 @@
 #!/bin/bash
 
+# omarchy:group=migrate
+# omarchy:name=migrate
 # omarchy:summary=Run pending Omarchy migrations.
 # omarchy:args=[--pending]
 
 set -euo pipefail
 
 mode="run"
-
-usage() {
-  echo "Usage: omarchy-migrate [--pending]"
-}
 
 while (($#)); do
   case "$1" in
@@ -18,7 +16,7 @@ while (($#)); do
       shift
       ;;
     -h|--help)
-      usage
+      echo "Usage: omarchy-migrate [--pending]"
       exit 0
       ;;
     *)
@@ -29,16 +27,16 @@ while (($#)); do
 done
 
 OMARCHY_PATH="${OMARCHY_PATH:-/usr/share/omarchy}"
-STATE_DIR="${OMARCHY_MIGRATION_STATE:-$HOME/.local/state/omarchy/migrations}"
+STATE_DIR="${OMARCHY_MIGRATION_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/migrations}"
 MIGRATIONS_DIR="$OMARCHY_PATH/migrations"
+LOCK_PARENT="${XDG_RUNTIME_DIR:-$HOME/.local/state/omarchy}"
+LOCK_PATH="$LOCK_PARENT/migrate.lock"
 
 migration_entries() {
   [[ -d $MIGRATIONS_DIR ]] || return 0
-
   local file filename
-
   for file in "$MIGRATIONS_DIR"/*.sh; do
-    [[ -f $file ]] || continue
+    [[ -f $file && ! -L $file ]] || continue
     filename=$(basename "$file")
     printf '%s\t%s\t%s\n' "$filename" "$file" "$STATE_DIR/$filename"
   done
@@ -46,28 +44,23 @@ migration_entries() {
 
 pending_migrations() {
   local name file marker
-
   while IFS=$'\t' read -r name file marker; do
     [[ -n $name ]] || continue
-    if [[ ! -f $marker ]]; then
-      printf '%s\n' "$name"
-    fi
+    [[ -f $marker && ! -L $marker ]] || printf '%s\n' "$name"
   done < <(migration_entries)
 }
 
-if [[ $mode == "pending" ]]; then
+if [[ $mode == pending ]]; then
   pending_output=$(pending_migrations)
   if [[ -n $pending_output ]]; then
     printf '%s\n' "$pending_output"
     exit 0
-  else
-    exit 1
   fi
+  exit 1
 fi
 
 wait_for_pacman_transaction() {
   local lock_file=/var/lib/pacman/db.lck
-
   [[ -e $lock_file ]] || return 0
   echo "Waiting for pacman transaction to finish before running Omarchy migrations..."
 
@@ -82,21 +75,26 @@ wait_for_pacman_transaction() {
 
 wait_for_pacman_transaction
 
-mkdir -p "$STATE_DIR"
+mkdir -p "$STATE_DIR" "$LOCK_PARENT"
+umask 077
+exec {lock_fd}>"$LOCK_PATH"
+flock -n "$lock_fd" || {
+  echo "Another Omarchy migration is already running." >&2
+  exit 1
+}
+
 [[ -d $MIGRATIONS_DIR ]] || exit 0
 
 while IFS=$'\t' read -r name file marker <&3; do
   [[ -n $name ]] || continue
+  [[ -f $marker && ! -L $marker ]] && continue
 
-  if [[ ! -f $marker ]]; then
-    echo -e "\e[32m\nRunning migration (${name%.sh})\e[0m"
-    OMARCHY_PATH="$OMARCHY_PATH" bash -euo pipefail "$file" 3<&-
-    mkdir -p "$(dirname "$marker")"
-    touch "$marker"
-  fi
+  echo -e "\e[32m\nRunning migration (${name%.sh})\e[0m"
+  OMARCHY_PATH="$OMARCHY_PATH" bash -euo pipefail "$file" 3<&-
+
+  marker_tmp="$STATE_DIR/.${name}.tmp.$$"
+  : > "$marker_tmp"
+  mv -f -- "$marker_tmp" "$marker"
 done 3< <(migration_entries)
 
-# Clear a login-time notification the user left sitting there and then resolved
-# by running migrations some other way. The substring matches both the current
-# and legacy notification titles.
 omarchy-notification-dismiss "Omarchy Migrations" >/dev/null 2>&1 || true

@@ -1,0 +1,125 @@
+#!/bin/bash
+# omarchy:group=update
+# omarchy:name=preflight
+# omarchy:summary=Validate update prerequisites without modifying the system.
+# omarchy:args=[--json]
+
+set -u -o pipefail
+
+json=0
+case "${1:-}" in
+  --json) json=1 ;;
+  "") ;;
+  *) echo "Usage: omarchy update preflight [--json]" >&2; exit 2 ;;
+esac
+
+checks=()
+statuses=()
+details=()
+
+add_check() {
+  checks+=("$1")
+  statuses+=("$2")
+  details+=("$3")
+}
+
+json_string() {
+  jq -Rn --arg value "$1" '$value'
+}
+
+if command -v omarchy-update-requires-free-space >/dev/null 2>&1; then
+  if omarchy-update-requires-free-space >/dev/null 2>&1; then
+    add_check disk-space ok "at least 10 GiB available"
+  else
+    add_check disk-space fail "less than 10 GiB available"
+  fi
+else
+  add_check disk-space fail "free-space check command is unavailable"
+fi
+
+if command -v pacman >/dev/null 2>&1; then
+  if [[ -e /var/lib/pacman/db.lck ]]; then
+    add_check pacman-lock fail "pacman transaction lock is present"
+  else
+    add_check pacman-lock ok "no pacman transaction lock is present"
+  fi
+else
+  add_check pacman fail "pacman is unavailable"
+fi
+
+if command -v omarchy-update-lock >/dev/null 2>&1; then
+  if omarchy-update-lock held >/dev/null 2>&1; then
+    add_check omarchy-lock fail "another Omarchy update is already running"
+  else
+    add_check omarchy-lock ok "no Omarchy update is running"
+  fi
+else
+  add_check omarchy-lock fail "update lock command is unavailable"
+fi
+
+if command -v systemctl >/dev/null 2>&1; then
+  state=$(systemctl is-system-running 2>/dev/null || true)
+  case "$state" in
+    running) add_check systemd ok "system manager is operational" ;;
+    "") add_check systemd warn "system manager state unavailable" ;;
+    *) add_check systemd warn "system manager state: $state" ;;
+  esac
+else
+  add_check systemd info "systemctl is unavailable"
+fi
+
+if command -v omarchy-migrate >/dev/null 2>&1; then
+  if omarchy-migrate --pending >/dev/null 2>&1; then
+    add_check migrations warn "pending migrations exist"
+  else
+    rc=$?
+    case $rc in
+      1) add_check migrations ok "no pending migrations" ;;
+      *) add_check migrations warn "unable to determine migration state (exit $rc)" ;;
+    esac
+  fi
+else
+  add_check migrations warn "migration command unavailable"
+fi
+
+if command -v omarchy-snapshot >/dev/null 2>&1; then
+  if command -v snapper >/dev/null 2>&1; then
+    add_check snapshots info "snapshot tooling is available"
+  else
+    add_check snapshots warn "snapper is unavailable; update may proceed without a snapshot"
+  fi
+else
+  add_check snapshots info "snapshot command is unavailable"
+fi
+
+if [[ -r / && -x / ]]; then
+  add_check filesystem ok "root filesystem is accessible"
+else
+  add_check filesystem fail "root filesystem is not accessible"
+fi
+
+if (( json )); then
+  printf '{"checks":['
+  for i in "${!checks[@]}"; do
+    (( i )) && printf ','
+    printf '{"name":'
+    json_string "${checks[i]}"
+    printf ',"status":'
+    json_string "${statuses[i]}"
+    printf ',"detail":'
+    json_string "${details[i]}"
+    printf '}'
+  done
+  printf ']}\n'
+else
+  printf '%-16s %-5s %s\n' CHECK STATE DETAIL
+  for i in "${!checks[@]}"; do
+    printf '%-16s %-5s %s\n' "${checks[i]}" "${statuses[i]}" "${details[i]}"
+  done
+fi
+
+for status in "${statuses[@]}"; do
+  [[ $status == fail ]] && exit 1
+done
+
+exit 0

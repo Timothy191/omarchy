@@ -1,0 +1,152 @@
+#!/bin/bash
+# omarchy:group=debug
+# omarchy:name=doctor
+# omarchy:summary=Check Omarchy installation health without modifying the system.
+# omarchy:args=[--json]
+# omarchy:examples=omarchy doctor;omarchy doctor --json
+
+set -u -o pipefail
+
+OMARCHY_PATH="${OMARCHY_PATH:-/usr/share/omarchy}"
+OS_RELEASE_PATH="${OMARCHY_OS_RELEASE_PATH:-/etc/os-release}"
+POWER_SUPPLY_PATH="${OMARCHY_POWER_SUPPLY_PATH:-/sys/class/power_supply}"
+json=0
+
+case "${1:-}" in
+  --json) json=1 ;;
+  "") ;;
+  *) echo "Usage: omarchy doctor [--json]" >&2; exit 2 ;;
+esac
+
+checks=()
+statuses=()
+details=()
+
+add_check() {
+  checks+=("$1")
+  statuses+=("$2")
+  details+=("$3")
+}
+
+check_command() {
+  local cmd="$1" required="$2"
+  if command -v "$cmd" >/dev/null 2>&1; then
+    add_check "command:$cmd" ok "available"
+  elif [[ $required == required ]]; then
+    add_check "command:$cmd" fail "missing required command"
+  else
+    add_check "command:$cmd" warn "optional command not found"
+  fi
+}
+
+json_string() {
+  jq -Rn --arg value "$1" '$value'
+}
+
+if [[ -r $OS_RELEASE_PATH ]]; then
+  . "$OS_RELEASE_PATH"
+  if [[ ${ID:-} == arch || " ${ID_LIKE:-} " == *\ arch\ * ]]; then
+    add_check os ok "${PRETTY_NAME:-Arch-based system}"
+  else
+    add_check os fail "Omarchy requires an Arch-based system; detected ${PRETTY_NAME:-unknown}"
+  fi
+else
+  add_check os fail "$OS_RELEASE_PATH is unavailable"
+fi
+
+if [[ -d $OMARCHY_PATH ]]; then
+  add_check omarchy-path ok "$OMARCHY_PATH"
+else
+  add_check omarchy-path fail "$OMARCHY_PATH does not exist"
+fi
+
+check_command pacman required
+check_command systemctl required
+check_command git required
+check_command jq required
+check_command hyprctl optional
+check_command waybar optional
+
+[[ -d $OMARCHY_PATH/migrations ]] &&
+  add_check migrations ok "migration directory present" ||
+  add_check migrations fail "migration directory missing"
+
+[[ -d $OMARCHY_PATH/bin ]] &&
+  add_check commands ok "command directory present" ||
+  add_check commands fail "command directory missing"
+
+if command -v systemctl >/dev/null 2>&1; then
+  state=$(systemctl is-system-running 2>/dev/null || true)
+  case "$state" in
+    running) add_check systemd ok "system manager is operational" ;;
+    "") add_check systemd warn "system manager state unavailable" ;;
+    *) add_check systemd warn "system manager state: $state" ;;
+  esac
+fi
+
+if command -v git >/dev/null 2>&1 && [[ -d $OMARCHY_PATH/.git ]]; then
+  if git -C "$OMARCHY_PATH" diff --quiet && git -C "$OMARCHY_PATH" diff --cached --quiet; then
+    add_check git-tree ok "Omarchy tree has no local modifications"
+  else
+    add_check git-tree warn "Omarchy tree contains local modifications"
+  fi
+fi
+
+if command -v pacman >/dev/null 2>&1; then
+  if pacman -Q omarchy >/dev/null 2>&1; then
+    add_check package ok "omarchy package is installed"
+  else
+    add_check package warn "omarchy package is not installed or not queryable"
+  fi
+fi
+
+if command -v lspci >/dev/null 2>&1; then
+  gpu_count=$(lspci 2>/dev/null | grep -Eic 'VGA compatible controller|3D controller|Display controller' || true)
+  if (( gpu_count > 0 )); then
+    add_check gpu ok "$gpu_count PCI display controller(s) detected"
+  else
+    add_check gpu warn "no PCI GPU detected"
+  fi
+else
+  add_check gpu warn "lspci is unavailable"
+fi
+
+if compgen -G "$POWER_SUPPLY_PATH/BAT*" >/dev/null 2>&1; then
+  add_check battery ok "battery device detected"
+else
+  add_check battery warn "no battery device detected"
+fi
+
+if command -v snapper >/dev/null 2>&1; then
+  add_check snapshots ok "snapper is available"
+else
+  add_check snapshots info "snapper is unavailable; updates may proceed without snapshots"
+fi
+
+if (( json )); then
+  printf '{"omarchy_path":'
+  json_string "$OMARCHY_PATH"
+  printf ',"checks":['
+  for i in "${!checks[@]}"; do
+    (( i )) && printf ','
+    printf '{"name":'
+    json_string "${checks[i]}"
+    printf ',"status":'
+    json_string "${statuses[i]}"
+    printf ',"detail":'
+    json_string "${details[i]}"
+    printf '}'
+  done
+  printf ']}\n'
+else
+  printf '%-24s %-5s %s\n' CHECK STATE DETAIL
+  for i in "${!checks[@]}"; do
+    printf '%-24s %-5s %s\n' "${checks[i]}" "${statuses[i]}" "${details[i]}"
+  done
+fi
+
+for status in "${statuses[@]}"; do
+  [[ $status == fail ]] && exit 1
+done
+
+exit 0

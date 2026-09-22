@@ -10,18 +10,20 @@ set -u
 json=0
 [[ ${1:-} == "--json" ]] && json=1
 
-# Capability detection, not hardware branding. Each field is a boolean or a
-# vendor string so callers can branch on capabilities instead of model names.
-# GPU vendor is read from cached sysfs IDs, never lspci, so a runtime-suspended
-# GPU is not woken by running this command.
+# GPU vendor is read from cached sysfs IDs, never lspci, so a runtime-
+# suspended GPU is not woken by running this command. Only display and 3D
+# controllers count as GPUs: an NVIDIA audio function carries the vendor ID
+# but is not a graphics adapter.
 pci_devices_path="${OMARCHY_PCI_DEVICES_PATH:-/sys/bus/pci/devices}"
 gpu_vendor="unknown"
 if [[ -d "$pci_devices_path" ]]; then
-  vendor_id=""
   for device in "$pci_devices_path"/*; do
-    [[ -r "$device/vendor" ]] || continue
-    vendor_id=$(< "$device/vendor")
-    case "$vendor_id" in
+    [[ -r "$device/vendor" && -r "$device/class" ]] || continue
+    case "$(< "$device/class")" in
+      0x03*) ;;
+      *) continue ;;
+    esac
+    case "$(< "$device/vendor")" in
       0x10de) gpu_vendor=nvidia; break ;;
       0x1002|0x1003) gpu_vendor=amd; break ;;
       0x8086) gpu_vendor=intel; break ;;

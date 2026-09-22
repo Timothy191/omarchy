@@ -24,10 +24,18 @@ add_check() {
 # independently-maintained copy of the threshold. omarchy-update-requires-free-space
 # exits 0 when there is enough space and 1 otherwise; it honours
 # OMARCHY_UPDATE_FORCE and is the single source of truth for the 10 GiB floor.
+# Its human-readable warning is written to stdout, so it is drained here and
+# re-emitted to stderr where it cannot pollute the JSON report.
 if command -v omarchy-update-requires-free-space >/dev/null 2>&1; then
-  if omarchy-update-requires-free-space; then
+  free_space_output=""
+  set +e
+  free_space_output=$(omarchy-update-requires-free-space 2>/dev/null)
+  free_space_status=$?
+  set -e
+  if (( free_space_status == 0 )); then
     add_check "disk-space" ok "at least 10 GiB available"
   else
+    [[ -n $free_space_output ]] && printf '%s\n' "$free_space_output" >&2
     add_check "disk-space" fail "less than 10 GiB available"
   fi
 else

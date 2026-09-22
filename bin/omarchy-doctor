@@ -32,9 +32,10 @@ check_command() {
   fi
 }
 
-if [[ -r /etc/os-release ]]; then
-  # shellcheck disable=SC1091
-  . /etc/os-release
+os_release_path="${OMARCHY_OS_RELEASE:-/etc/os-release}"
+if [[ -r "$os_release_path" ]]; then
+  # shellcheck disable=SC1090
+  . "$os_release_path"
   if [[ "${ID:-}" == "arch" || "${ID_LIKE:-}" == *arch* ]]; then
     add_check "os" ok "${PRETTY_NAME:-Arch-based system}"
   else

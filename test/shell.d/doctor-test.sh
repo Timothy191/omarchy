@@ -35,16 +35,35 @@ if [[ "${1:-}" == "is-system-running" ]]; then
 fi
 exit 0
 SH
-chmod +x "$stub_bin/pacman" "$stub_bin/systemctl"
+cat >"$stub_bin/git" <<'SH'
+#!/bin/bash
+exit 0
+SH
+chmod +x "$stub_bin/pacman" "$stub_bin/systemctl" "$stub_bin/git"
 
-# An empty stub bin, for the "missing required command" case.
+# The command itself shells out to sed, grep, sort, find and basename for its
+# JSON escaping and ordering. Link those in so the stub PATH is self-contained
+# and the checks for missing Omarchy commands stay real.
+for tool in sed grep sort find basename; do
+  ln -sf "$(command -v "$tool")" "$stub_bin/$tool"
+done
+
+# An empty stub bin, for the "missing required command" case. Only the tools
+# the command itself needs to run are linked in; the required Omarchy commands
+# stay missing so the failure checks are real.
 empty_stub="$tmp_dir/empty-bin"
 mkdir -p "$empty_stub"
+for tool in sed grep sort find basename; do
+  ln -sf "$(command -v "$tool")" "$empty_stub/$tool"
+done
 
 run_doctor() {
   local bin_dir="$1"
   shift
-  OMARCHY_PATH="$fake_root" PATH="$bin_dir:$ROOT/bin:$PATH" "$doctor" "$@"
+  # Only the stub bin and the repo bin: PATH must not fall through to the
+  # host, or a missing-required-command check would find the real binary.
+  OMARCHY_PATH="$fake_root" OMARCHY_OS_RELEASE="${OMARCHY_OS_RELEASE:-/etc/os-release}" \
+    PATH="$bin_dir:$ROOT/bin" "$doctor" "$@"
 }
 
 # --- text mode -----------------------------------------------------------
@@ -124,9 +143,18 @@ pass "doctor detects a non-Arch host"
 
 # --- a healthy tree passes ------------------------------------------------
 
+# The tree must also be a git repository, or the git-state check reports a
+# warning and the run fails. Initialize a throwaway repo so the check is real
+# without touching the real one.
+git init -q "$fake_root"
+
+# The host here is not Arch, so the os check would fail. Provide a stub
+# os-release so the healthy-tree path can be exercised in isolation.
+os_release="$tmp_dir/os-release"
+printf 'NAME="Arch Linux"\nID=arch\nPRETTY_NAME="Arch Linux"\n' >"$os_release"
 mkdir -p "$fake_root/migrations" "$fake_root/bin"
 set +e
-output=$(run_doctor "$stub_bin")
+output=$(OMARCHY_OS_RELEASE="$os_release" run_doctor "$stub_bin")
 status=$?
 set -e
 (( status == 0 )) || fail "doctor passes when every required check succeeds"
@@ -140,7 +168,7 @@ pass "doctor passes on a healthy tree"
 # path that does not exist yet and confirm it stays absent.
 missing_root="$tmp_dir/does-not-exist"
 set +e
-OMARCHY_PATH="$missing_root" PATH="$stub_bin:$ROOT/bin:$PATH" "$doctor" >/dev/null 2>&1
+OMARCHY_PATH="$missing_root" PATH="$stub_bin:$ROOT/bin" "$doctor" >/dev/null 2>&1
 status=$?
 set -e
 (( status == 1 )) || fail "doctor fails when OMARCHY_PATH is absent"

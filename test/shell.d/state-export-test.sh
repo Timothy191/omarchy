@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-source "$(cd -- "$(dirname - "$BASH_SOURCE[0]}")" && pwd)/base-test.sh"
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/base-test.sh"
 
 state_export="$ROOT/bin/omarchy-state-export"
 

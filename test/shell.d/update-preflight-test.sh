@@ -58,12 +58,22 @@ if [[ "${1:-}" == "--pending" ]]; then
 fi
 exit 0'
 
+# pacman is faked so the preflight can run on a machine without it. The lock
+# path is overridable so the test never touches the real, root-owned lock.
+write_stub pacman '
+if [[ "${1:-}" == "Q" && "${2:-}" == "omarchy" ]]; then
+  exit 0
+fi
+exit 127'
+
 run_preflight() {
+  # stdout carries the JSON or text report; stderr carries warnings such as
+  # the low-disk-space message, which must not pollute the parsed output.
   PATH="$stub_bin:$ROOT/bin:$PATH" \
     TEST_AVAILABLE_BYTES="${TEST_AVAILABLE_BYTES:-$((11 * 1024 * 1024 * 1024))}" \
     TEST_DF_INVALID="${TEST_DF_INVALID:-0}" \
     TEST_MIGRATE_PENDING="${TEST_MIGRATE_PENDING:-1}" \
-    "$preflight" "$@"
+    "$preflight" "$@" 2>/dev/null
 }
 
 # --- sufficient disk passes ----------------------------------------------
@@ -91,7 +101,7 @@ pass "preflight fails with insufficient disk space"
 # --- pacman lock ----------------------------------------------------------
 
 set +e
-output=$(PATH="$stub_bin:$ROOT/bin:$PATH" "$preflight" --json)
+output=$(run_preflight --json)
 status=$?
 set -e
 (( status == 0 )) || fail "preflight passes without a pacman lock"
@@ -104,7 +114,7 @@ pass "preflight reports no pacman lock"
 pacman_lock="$tmp_dir/db.lck"
 touch "$pacman_lock"
 set +e
-output=$(OMARCHY_PACMAN_LOCK_PATH="$pacman_lock" PATH="$stub_bin:$ROOT/bin:$PATH" "$preflight" --json)
+output=$(OMARCHY_PACMAN_LOCK_PATH="$pacman_lock" run_preflight --json)
 status=$?
 rm -f "$pacman_lock"
 set -e
@@ -116,7 +126,7 @@ pass "preflight reports the pacman lock"
 # --- update lock ----------------------------------------------------------
 
 set +e
-output=$(PATH="$stub_bin:$ROOT/bin:$PATH" "$preflight" --json)
+output=$(run_preflight --json)
 status=$?
 set -e
 (( status == 0 )) || fail "preflight passes without an update lock"
